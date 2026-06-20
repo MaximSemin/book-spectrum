@@ -1,0 +1,68 @@
+name: Build & Deploy spectrum to Pages
+
+on:
+  push:
+    branches: [main]
+  # Ручной запуск: можно указать другое произведение и параметры —
+  # результат будет пересобран и опубликован на GitHub Pages.
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Ссылка на произведение"
+        required: true
+        default: "http://az.lib.ru/d/dostoewskij_f_m/text_0100.shtml"
+      words_per_page:
+        description: "Среднее число слов на страницу"
+        required: true
+        default: "300"
+      title:
+        description: "Заголовок страницы (необязательно)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Пересобрать спектр (только при ручном запуске)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          URL: ${{ github.event.inputs.url }}
+          WPP: ${{ github.event.inputs.words_per_page }}
+          TITLE: ${{ github.event.inputs.title }}
+        run: |
+          if [ -n "$TITLE" ]; then
+            python spectrum.py "$URL" -w "$WPP" -o docs/index.html -t "$TITLE"
+          else
+            python spectrum.py "$URL" -w "$WPP" -o docs/index.html
+          fi
+
+      - name: Настроить Pages (включит Pages при первом запуске)
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
