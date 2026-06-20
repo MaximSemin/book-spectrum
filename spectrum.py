@@ -72,7 +72,7 @@ COLOR_DEFS = [
         ["сер", "сед", "серебрист", "пепельн", "дымчат"]),
     ("black",  "чёрный",      "#2B2B2B",
         ["черн", "смолян"]),
-    ("white",  "белый",       "#F4F4F2",
+    ("white",  "белый",       "#FFFFFF",
         ["бел", "белоснежн", "бледн", "молочн"]),
 ]
 
@@ -280,13 +280,17 @@ def flow_svg(page_data) -> str:
         ref = 1
 
     rects = []
-    bg = (244, 244, 242)  # цвет «бесцветной» страницы
+    # Страницы без цвета — отдельное светло-серое «поле». Цветные страницы
+    # подмешиваются поверх БЕЛОГО фона, поэтому упоминания белого дают яркую
+    # белую полосу, заметную на сером поле (т.е. белый ≠ «нет цвета»).
+    empty_fill = "#dde1e6"
+    bg = (255, 255, 255)
     for i, d in enumerate(page_data):
         col = blend(d["counts"])
         if col is None:
-            fill = "#f4f4f2"
+            fill = empty_fill
         else:
-            alpha = 0.18 + 0.82 * min(1.0, d["total"] / ref)
+            alpha = 0.30 + 0.70 * min(1.0, d["total"] / ref)
             mixed = tuple(col[j] * alpha + bg[j] * (1 - alpha) for j in range(3))
             fill = _rgb_to_hex(mixed)
         rects.append(f'<rect x="{i}" y="0" width="1.02" height="{height}" fill="{fill}"/>')
@@ -315,7 +319,9 @@ def aggregate_svg(totals: dict) -> str:
         w = width * c / total
         segs.append(
             f'<rect x="{x:.2f}" y="0" width="{w:.2f}" height="{height}" '
-            f'fill="{HEX_BY_KEY[key]}"><title>{NAME_BY_KEY[key]}: {c}</title></rect>'
+            f'fill="{HEX_BY_KEY[key]}" stroke="#d9d9d9" stroke-width="1" '
+            f'vector-effect="non-scaling-stroke">'
+            f'<title>{NAME_BY_KEY[key]}: {c}</title></rect>'
         )
         x += w
     return (
@@ -392,7 +398,8 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 <h2>Спектр по ходу текста</h2>
 <p class="sub">Слева направо — от начала к концу книги. Каждая полоса — одна страница;
 её цвет — смесь упомянутых на ней цветов, яркость — насколько страница «цветная».
-Бледные участки — мало цвета.</p>
+Светло-серое поле — страницы без цвета; упоминания белого видны как яркие
+белые полосы.</p>
 <div class="flow-box">{flow}</div>
 <div class="axis"><span>начало</span><span>конец</span></div>
 
