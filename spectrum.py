@@ -220,21 +220,31 @@ def analyze(text: str, words_per_page: int):
         chunk = norm[start:finish]
         # normalize() сохраняет длину строки, поэтому те же индексы дают
         # исходный (не приведённый) текст страницы для показа при наведении.
-        page_text = text[start:finish].strip()
+        raw = text[start:finish]
+        lead = len(raw) - len(raw.lstrip())   # сдвиг из-за .strip() ниже
+        page_text = raw.strip()
 
         counts = {}
         page_total = 0
+        highlights = []   # [start, end, color_key] — позиции в page_text
         for key, name, hexc, rx in COLOR_PATTERNS:
-            c = len(rx.findall(chunk))
+            c = 0
+            for m in rx.finditer(chunk):
+                c += 1
+                s, e = m.start() - lead, m.end() - lead
+                if 0 <= s < e <= len(page_text):
+                    highlights.append([s, e, key])
             if c:
                 counts[key] = c
                 totals[key] += c
                 page_total += c
+        highlights.sort()
         page_data.append({
             "counts": counts,
             "total": page_total,
             "words": hi - lo,
             "text": page_text,
+            "highlights": highlights,
         })
 
     return {
@@ -380,7 +390,12 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   .pv-head {{ padding:10px 14px; border-bottom:1px solid #f0f0f0; font-size:.9rem;
               display:flex; flex-wrap:wrap; gap:8px; align-items:center; }}
   .pv-text {{ padding:12px 14px; max-height:280px; overflow:auto; white-space:pre-wrap;
-              font-size:.93rem; line-height:1.6; color:#222; }}
+              font-size:.93rem; line-height:1.7; color:#222; }}
+  .pv-text mark.hl {{
+    color: inherit; border-radius: 3px; padding: 0 2px;
+    background: color-mix(in srgb, var(--c) 26%, transparent);
+    box-shadow: inset 0 -2px 0 0 var(--c), inset 0 0 0 1px rgba(0,0,0,.10);
+  }}
   .chip {{ display:inline-flex; align-items:center; gap:5px; background:#f4f4f5;
            border-radius:20px; padding:2px 9px; font-size:.8rem; }}
   .chip i {{ width:11px; height:11px; border-radius:3px; display:inline-block;
@@ -474,6 +489,23 @@ PAGE_SCRIPT = """
     return '<span class="chip"><i style="background:' + m.h + '"></i>' +
            m.n + ' · ' + c + '</span>';
   }
+  function esc(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function highlight(t, hs) {
+    if (!hs || !hs.length) return esc(t);
+    var out = '', pos = 0;
+    for (var i = 0; i < hs.length; i++) {
+      var s = hs[i][0], e = hs[i][1], k = hs[i][2];
+      if (s < pos) continue;            // пропустить пересечения
+      var m = COLORS[k] || { n: k, h: '#ccc' };
+      out += esc(t.slice(pos, s)) +
+             '<mark class="hl" style="--c:' + m.h + '" title="' + m.n + '">' +
+             esc(t.slice(s, e)) + '</mark>';
+      pos = e;
+    }
+    return out + esc(t.slice(pos));
+  }
   function show(i) {
     if (i < 0 || i >= PAGES.length) return;
     var p = PAGES[i];
@@ -482,7 +514,7 @@ PAGE_SCRIPT = """
       : '<span class="muted">цветов на странице нет</span>';
     head.innerHTML = '<b>Страница ' + (i + 1) + ' / ' + PAGES.length + '</b>' +
                      '<span class="muted">' + p.w + ' слов</span>' + chips;
-    textEl.textContent = p.t;
+    textEl.innerHTML = highlight(p.t, p.h);
   }
   function at(clientX) {
     var r = box.getBoundingClientRect();
@@ -551,6 +583,7 @@ def render_html(result: dict, title: str, url: str) -> str:
             "w": d["words"],
             "c": sorted(d["counts"].items(), key=lambda kv: kv[1], reverse=True),
             "t": d["text"],
+            "h": d["highlights"],
         }
         for d in result["page_data"]
     ]
