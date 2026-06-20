@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import math
 import re
 import sys
@@ -163,6 +164,13 @@ def extract_text(page_html: str) -> str:
     begin = page_html.find("Section Begins")
     end = page_html.find("Section Ends")
     if begin != -1 and end != -1 and end > begin:
+        # начать после закрытия комментария <!--Section Begins-->
+        close = page_html.find("-->", begin)
+        begin = close + 3 if -1 < close < end else begin
+        # закончить до открытия комментария <!--Section Ends-->
+        open_end = page_html.rfind("<!--", begin, end)
+        if open_end != -1:
+            end = open_end
         body = page_html[begin:end]
     else:
         body = page_html
@@ -210,6 +218,9 @@ def analyze(text: str, words_per_page: int):
         start = tokens[lo].start()
         finish = tokens[hi - 1].end()
         chunk = norm[start:finish]
+        # normalize() сохраняет длину строки, поэтому те же индексы дают
+        # исходный (не приведённый) текст страницы для показа при наведении.
+        page_text = text[start:finish].strip()
 
         counts = {}
         page_total = 0
@@ -223,6 +234,7 @@ def analyze(text: str, words_per_page: int):
             "counts": counts,
             "total": page_total,
             "words": hi - lo,
+            "text": page_text,
         })
 
     return {
@@ -357,11 +369,23 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   .sub a {{ color: #1d5fb0; }}
   h2 {{ font-size: 1.1rem; margin: 40px 0 10px; }}
   .flow-box {{
-    width: 100%; height: 140px; border-radius: 10px; overflow: hidden;
-    border: 1px solid #e3e3e3; background: #fff;
+    position: relative; width: 100%; height: 140px; border-radius: 10px;
+    overflow: hidden; border: 1px solid #e3e3e3; background: #fff; cursor: crosshair;
   }}
   svg.flow {{ width: 100%; height: 100%; display: block; }}
+  .cursor {{ position:absolute; top:0; bottom:0; width:1px; background:rgba(0,0,0,.55);
+             pointer-events:none; display:none; }}
   .axis {{ display:flex; justify-content:space-between; color:#888; font-size:.8rem; margin-top:6px; }}
+  .page-view {{ margin-top:14px; border:1px solid #e3e3e3; border-radius:10px; background:#fff; }}
+  .pv-head {{ padding:10px 14px; border-bottom:1px solid #f0f0f0; font-size:.9rem;
+              display:flex; flex-wrap:wrap; gap:8px; align-items:center; }}
+  .pv-text {{ padding:12px 14px; max-height:280px; overflow:auto; white-space:pre-wrap;
+              font-size:.93rem; line-height:1.6; color:#222; }}
+  .chip {{ display:inline-flex; align-items:center; gap:5px; background:#f4f4f5;
+           border-radius:20px; padding:2px 9px; font-size:.8rem; }}
+  .chip i {{ width:11px; height:11px; border-radius:3px; display:inline-block;
+             border:1px solid rgba(0,0,0,.15); }}
+  .muted {{ color:#999; }}
   .agg-box {{ width:100%; height:60px; border-radius:8px; overflow:hidden; border:1px solid #e3e3e3; }}
   svg.aggregate {{ width:100%; height:100%; display:block; }}
   .stats {{ display:flex; flex-wrap:wrap; gap:14px; margin:14px 0 0; }}
@@ -400,8 +424,13 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 её цвет — смесь упомянутых на ней цветов, яркость — насколько страница «цветная».
 Светло-серое поле — страницы без цвета; упоминания белого видны как яркие
 белые полосы.</p>
-<div class="flow-box">{flow}</div>
+<div class="flow-box" id="flowBox">{flow}<div class="cursor" id="cursor"></div></div>
 <div class="axis"><span>начало</span><span>конец</span></div>
+
+<div class="page-view">
+  <div class="pv-head" id="pvHead">Наведите курсор на спектр, чтобы прочитать текст страницы.</div>
+  <div class="pv-text" id="pvText"></div>
+</div>
 
 <h2>Сводное распределение</h2>
 <p class="sub">Доля каждого цвета среди всех цветовых упоминаний (в спектральном порядке).</p>
@@ -420,8 +449,57 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   Анализ учитывает русские названия цветов (прилагательные и их формы).
 </footer>
 </div>
+<!--PAGE_SCRIPT-->
 </body>
 </html>
+"""
+
+# JS вынесен из шаблона (чтобы фигурные скобки не конфликтовали с .format()).
+# Подставляется через str.replace по маркеру <!--PAGE_SCRIPT-->.
+PAGE_SCRIPT = """
+<script id="pages-data" type="application/json">__PAGES__</script>
+<script id="colors-meta" type="application/json">__COLORS__</script>
+<script>
+(function () {
+  var PAGES = JSON.parse(document.getElementById('pages-data').textContent);
+  var COLORS = JSON.parse(document.getElementById('colors-meta').textContent);
+  var box = document.getElementById('flowBox');
+  var cursor = document.getElementById('cursor');
+  var head = document.getElementById('pvHead');
+  var textEl = document.getElementById('pvText');
+  if (!box || !PAGES.length) return;
+
+  function chip(k, c) {
+    var m = COLORS[k] || { n: k, h: '#ccc' };
+    return '<span class="chip"><i style="background:' + m.h + '"></i>' +
+           m.n + ' · ' + c + '</span>';
+  }
+  function show(i) {
+    if (i < 0 || i >= PAGES.length) return;
+    var p = PAGES[i];
+    var chips = (p.c && p.c.length)
+      ? p.c.map(function (x) { return chip(x[0], x[1]); }).join('')
+      : '<span class="muted">цветов на странице нет</span>';
+    head.innerHTML = '<b>Страница ' + (i + 1) + ' / ' + PAGES.length + '</b>' +
+                     '<span class="muted">' + p.w + ' слов</span>' + chips;
+    textEl.textContent = p.t;
+  }
+  function at(clientX) {
+    var r = box.getBoundingClientRect();
+    var x = (clientX - r.left) / r.width;
+    if (x < 0) x = 0; if (x > 0.9999) x = 0.9999;
+    cursor.style.display = 'block';
+    cursor.style.left = (x * 100) + '%';
+    show(Math.floor(x * PAGES.length));
+  }
+  box.addEventListener('mousemove', function (e) { at(e.clientX); });
+  box.addEventListener('mouseleave', function () { cursor.style.display = 'none'; });
+  box.addEventListener('touchstart', function (e) { at(e.touches[0].clientX); }, { passive: true });
+  box.addEventListener('touchmove', function (e) { at(e.touches[0].clientX); e.preventDefault(); }, { passive: false });
+
+  show(0);
+})();
+</script>
 """
 
 
@@ -453,7 +531,7 @@ def render_html(result: dict, title: str, url: str) -> str:
 
     density = (total_color / pages) if pages else 0
 
-    return PAGE_TEMPLATE.format(
+    page = PAGE_TEMPLATE.format(
         title=html.escape(title),
         url=html.escape(url, quote=True),
         total_words=f"{result['total_words']:,}".replace(",", " "),
@@ -466,6 +544,26 @@ def render_html(result: dict, title: str, url: str) -> str:
         rows="\n  ".join(rows),
         generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     )
+
+    # Данные для интерактивного просмотра текста страниц при наведении.
+    pages_payload = [
+        {
+            "w": d["words"],
+            "c": sorted(d["counts"].items(), key=lambda kv: kv[1], reverse=True),
+            "t": d["text"],
+        }
+        for d in result["page_data"]
+    ]
+    colors_payload = {k: {"n": NAME_BY_KEY[k], "h": HEX_BY_KEY[k]} for k in COLOR_ORDER}
+
+    def _json(obj):
+        # Безопасно для вставки внутрь <script>: экранируем "</".
+        return json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")
+
+    script = (PAGE_SCRIPT
+              .replace("__PAGES__", _json(pages_payload))
+              .replace("__COLORS__", _json(colors_payload)))
+    return page.replace("<!--PAGE_SCRIPT-->", script)
 
 
 # --------------------------------------------------------------------------- #
